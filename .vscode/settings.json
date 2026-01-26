@@ -1,0 +1,17 @@
+{
+    "files.associations": {
+        "ledc.h": "c",
+        "new": "cpp"
+    },
+
+    "idf.pythonInstallPath": "d:\\Hardware\\.espressif\\tools\\idf-python\\3.11.2\\python.exe",
+    "idf.gitPathWin": "d:\\Hardware\\.espressif\\tools\\idf-git\\2.39.2\\cmd\\git.exe",
+    "idf.espIdfPathWin": "d:\\Hardware\\esp\\v5.4.1\\esp-idf",
+    "idf.toolsPathWin": "d:\\Hardware\\.espressif",
+    
+    "idf.hasWalkthroughBeenShown": true,
+    "idf.showOnboardingOnInit": true,
+    "python.terminal.activateEnvironment": false,
+    "python.defaultInterpreterPath": "",
+    "terminal.integrated.defaultProfile.windows": "ESP-IDF"
+}
