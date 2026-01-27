@@ -20,6 +20,7 @@ void pwm_gen::begin(int chan, uint32_t frequency, float duty)
     duty = clamp_duty(duty);
     pwm_config = {};
     channel = {};
+    channel.unit = MCPWM_UNIT_0;
     pwm_config.counter_mode = MCPWM_UP_COUNTER;
     pwm_config.duty_mode = MCPWM_DUTY_MODE_0;
     pwm_config.frequency = frequency;

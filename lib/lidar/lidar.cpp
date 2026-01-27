@@ -1,92 +1,124 @@
-#include <Arduino.h>
-#include <RPLidar.h>
-#include "pwmgen.h"
 #include "lidar.h"
-#include "thijs_rplidar.h"
+#include <string.h>
 
-lidar rlidar;
+#include "esp_err.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
-void lidar::begin()
+#include "esp_log.h"
+static const char* TAG_LIDAR = "LIDAR";
+
+
+static constexpr int UART_RX_BUF = 8 * 1024;
+static constexpr int UART_TX_BUF = 2 * 1024;
+
+float LidarA1::clamp_duty(float d)
 {
-    Serial1.begin(256000);
-    lidar_device.begin(Serial1);
-    // lidar_device.begin(Serial2);
-    lidar_motor.begin(3, 5000, 95);
+    if (d < 0) return 0;
+    if (d > 100) return 100;
+    return d;
+}
+
+esp_err_t LidarA1::uart_init_(uart_port_t uart_port, gpio_num_t tx_pin, gpio_num_t rx_pin, int baud)
+{
+    uart_config_t cfg = {};
+    cfg.baud_rate = baud;
+    cfg.data_bits = UART_DATA_8_BITS;
+    cfg.parity    = UART_PARITY_DISABLE;
+    cfg.stop_bits = UART_STOP_BITS_1;
+    cfg.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
+    cfg.source_clk = UART_SCLK_APB;
+
+    // Cài driver UART
+    esp_err_t e = uart_driver_install(uart_port, UART_RX_BUF, UART_TX_BUF, 0, nullptr, 0);
+    if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) {
+        return e;
+    }
+
+    ESP_ERROR_CHECK(uart_param_config(uart_port, &cfg));
+    ESP_ERROR_CHECK(uart_set_pin(uart_port, tx_pin, rx_pin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+
+    uart_ = uart_port;
+    tx_ = tx_pin;
+    rx_ = rx_pin;
+    uart_ready_ = true;
+    return ESP_OK;
+}
+
+esp_err_t LidarA1::begin(uart_port_t uart_port,
+                        gpio_num_t tx_pin,
+                        gpio_num_t rx_pin,
+                        int baud,
+                        int pwm_case,
+                        uint32_t pwm_freq,
+                        float duty)
+{
+    // 1) init UART
+    esp_err_t e = uart_init_(uart_port, tx_pin, rx_pin, baud);
+    if (e != ESP_OK) return e;
+
+    // 2) init motor PWM
+    duty = clamp_duty(duty);
+    motor_pwm_.begin(pwm_case, pwm_freq, duty);
+    motor_pwm_.start_pwm();
+
+    return ESP_OK;
+}
+
+/* ===== Motor wrappers ===== */
+
+void LidarA1::motor_set(float duty)
+{
+    motor_pwm_.set_duty(clamp_duty(duty));
+}
+
+void LidarA1::motor_set_freq(uint32_t freq)
+{
+    motor_pwm_.set_frequency(freq);
+}
+
+void LidarA1::motor_start()
+{
+    motor_pwm_.start_pwm();
+}
+
+void LidarA1::motor_stop()
+{
+    motor_pwm_.stop_pwm();
+}
+
+/* ===== UART raw + commands ===== */
+
+int LidarA1::uart_write_bytes_raw(const uint8_t* data, int len)
+{
+    if (!uart_ready_ || !data || len <= 0) return -1;
+    return uart_write_bytes(uart_, (const char*)data, len);
+}
+
+int LidarA1::send_cmd(uint8_t cmd)
+{
+    uint8_t pkt[2] = {0xA5, cmd};
+    int n = uart_write_bytes_raw(pkt, 2);
+    ESP_LOGI(TAG_LIDAR, "send_cmd 0xA5 0x%02X -> wrote %d bytes", cmd, n);
+    return n;
     
-  vTaskDelay(pdMS_TO_TICKS(10));
-  rlidar.speed_set(80, 10000); // Set LIDAR speed and frequency
-  vTaskDelay(pdMS_TO_TICKS(10));
-  rlidar.speed_set(80, 50000); // Set LIDAR speed and frequency
-
-  
 }
 
-void lidar::lidar_run(void)
+int LidarA1::stop()
 {
-    lidar_motor.start_pwm();
+    return send_cmd(0x25);
 }
 
-void lidar::lidar_stop(void)
+int LidarA1::reset()
 {
-    lidar_motor.stop_pwm();
+    return send_cmd(0x40);
 }
 
-void lidar::speed_set(int duty, int freq)
+int LidarA1::start_scan()
 {
-    lidar_motor.set_duty(duty);
-    lidar_motor.set_frequency(freq);
+    return send_cmd(0x20);
 }
 
-coordinate lidar::coordinate_take(void)
-{
-    coordinate value;
-    value.distance = 0;
-    value.angle = 0;
-    value.quality = 0;
-
-    if (IS_OK(lidar_device.waitPoint()))
-    {
-        if (lidar_device.getCurrentPoint().quality  > 0 )
-        {
-            value.distance = lidar_device.getCurrentPoint().distance; // distance value in mm unit
-            value.angle = lidar_device.getCurrentPoint().angle;       // angle value in degree
-            value.quality = lidar_device.getCurrentPoint().quality;   // quality value
-        }
-    }
-    else
-    {
-        this->lidar_stop();
-        rplidar_response_device_info_t info;
-        if (IS_OK(lidar_device.getDeviceInfo(info, 100)))
-        {
-            lidar_device.startScan();
-            this->lidar_run();
-            vTaskDelay(pdMS_TO_TICKS(10)); // Wait for LIDAR to start
-        }
-    }
-
-    return value;
-}
-
-coordinate simulateLidar()
-{
-    static float angle = 0.0f;
-    coordinate pt;
-
-    // Giả lập góc quét từ 0 -> 360
-    pt.angle = angle;
-    angle += 1.0f; // mỗi lần tăng 1 độ
-    if (angle >= 360.0f)
-        angle = 0.0f;
-
-    pt.distance = random(300, 2500);
-
-    return pt;
-}
-
-coordinate lidar::coordinate_takev2_0(void)
-{
-   
-
-   
-}
+// Some checking func
+int LidarA1::get_info()   { return send_cmd(0x50); }
+int LidarA1::get_health() { return send_cmd(0x52); }

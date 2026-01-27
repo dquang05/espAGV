@@ -254,76 +254,6 @@ void motor_speed_set(float v_mm_s, float w_deg_s)
     s_prev_sign2 = s2;
 }
 
-void move_straight(float distance_mm, float speed_mm_s)
-{
-    if (distance_mm == 0) return;
-
-    // Reset encoder
-    encoders_reset_v44();
-    prev_cnt0 = 0;
-    prev_cnt1 = 0;
-
-    // Go straight backward
-    float v = (distance_mm > 0) ? fabsf(speed_mm_s) : -fabsf(speed_mm_s);
-    motor_speed_set(v, 0.0f);
-
-    const float target_pulses = fabsf(distance_mm) / DIST_PER_PULSE_MM;
-
-    while (1) {
-        int32_t c0 = encoder_get_count32_v44(PCNT_UNIT_0);
-        int32_t c1 = encoder_get_count32_v44(PCNT_UNIT_1);
-
-        float avg = 0.5f * (fabsf((float)c0) + fabsf((float)c1));
-        if (avg >= target_pulses) break;
-
-        esp_task_wdt_reset();
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-
-    motor_speed_set(0, 0);
-    move_done = true;
-    Serial.println("Move done");
-    vTaskDelay(pdMS_TO_TICKS(100));
-}
-
-
-// ----------------------------------------------------
-// Quay một góc angle_deg (độ) với tốc độ góc w_rad (rad/s)
-// ----------------------------------------------------
-void turn_angle(float angle_deg, float angular_speed_deg_s)
-{
-    if (angle_deg == 0) return;
-
-    encoders_reset_v44();
-    prev_cnt0 = 0;
-    prev_cnt1 = 0;
-
-    // quay tại chỗ: v=0, w theo deg/s (dấu theo angle)
-    float w = (angle_deg > 0) ? fabsf(angular_speed_deg_s) : -fabsf(angular_speed_deg_s);
-    motor_speed_set(0.0f, w);
-
-    const float turn_pulses = fabsf(angle_deg) * PULSES_PER_DEGREE;
-
-    while (1) {
-        int32_t c0 = encoder_get_count32_v44(PCNT_UNIT_0);
-        int32_t c1 = encoder_get_count32_v44(PCNT_UNIT_1);
-
-        if (fabsf((float)c0) >= turn_pulses && fabsf((float)c1) >= turn_pulses) break;
-
-        esp_task_wdt_reset();
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-
-    motor_speed_set(0, 0);
-    turn_done = true;
-    Serial.println("Turn done");
-    vTaskDelay(pdMS_TO_TICKS(100));
-}
-static inline bool reached_signed(float now, float target, float tol)
-{
-    return (target >= 0.0f) ? (now >= target - tol) : (now <= target + tol);
-}
-
 static inline bool reached_signed(float now, float target, float tol)
 {
     return (target >= 0.0f) ? (now >= target - tol) : (now <= target + tol);
@@ -392,3 +322,71 @@ void drive_motion(float dist_mm, float angle_deg, float v_mm_s, float w_deg_s)
     motor_speed_set(0, 0);
     vTaskDelay(pdMS_TO_TICKS(100));
 }
+
+
+
+// void move_straight(float distance_mm, float speed_mm_s)
+// {
+//     if (distance_mm == 0) return;
+
+//     // Reset encoder
+//     encoders_reset_v44();
+//     prev_cnt0 = 0;
+//     prev_cnt1 = 0;
+
+//     // Go straight backward
+//     float v = (distance_mm > 0) ? fabsf(speed_mm_s) : -fabsf(speed_mm_s);
+//     motor_speed_set(v, 0.0f);
+
+//     const float target_pulses = fabsf(distance_mm) / DIST_PER_PULSE_MM;
+
+//     while (1) {
+//         int32_t c0 = encoder_get_count32_v44(PCNT_UNIT_0);
+//         int32_t c1 = encoder_get_count32_v44(PCNT_UNIT_1);
+
+//         float avg = 0.5f * (fabsf((float)c0) + fabsf((float)c1));
+//         if (avg >= target_pulses) break;
+
+//         esp_task_wdt_reset();
+//         vTaskDelay(pdMS_TO_TICKS(10));
+//     }
+
+//     motor_speed_set(0, 0);
+//     move_done = true;
+//     Serial.println("Move done");
+//     vTaskDelay(pdMS_TO_TICKS(100));
+// }
+
+
+// // ----------------------------------------------------
+// // Quay một góc angle_deg (độ) với tốc độ góc w_rad (rad/s)
+// // ----------------------------------------------------
+// void turn_angle(float angle_deg, float angular_speed_deg_s)
+// {
+//     if (angle_deg == 0) return;
+
+//     encoders_reset_v44();
+//     prev_cnt0 = 0;
+//     prev_cnt1 = 0;
+
+//     // quay tại chỗ: v=0, w theo deg/s (dấu theo angle)
+//     float w = (angle_deg > 0) ? fabsf(angular_speed_deg_s) : -fabsf(angular_speed_deg_s);
+//     motor_speed_set(0.0f, w);
+
+//     const float turn_pulses = fabsf(angle_deg) * PULSES_PER_DEGREE;
+
+//     while (1) {
+//         int32_t c0 = encoder_get_count32_v44(PCNT_UNIT_0);
+//         int32_t c1 = encoder_get_count32_v44(PCNT_UNIT_1);
+
+//         if (fabsf((float)c0) >= turn_pulses && fabsf((float)c1) >= turn_pulses) break;
+
+//         esp_task_wdt_reset();
+//         vTaskDelay(pdMS_TO_TICKS(10));
+//     }
+
+//     motor_speed_set(0, 0);
+//     turn_done = true;
+//     Serial.println("Turn done");
+//     vTaskDelay(pdMS_TO_TICKS(100));
+// }
