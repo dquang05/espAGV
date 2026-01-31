@@ -4,6 +4,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <WiFi.h>
 
 class WifiBridgeTCP {
 public:

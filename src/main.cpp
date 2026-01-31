@@ -1,5 +1,6 @@
 #include <Arduino.h>
-// #include <WiFi.h>
+#include "debug.h"
+#include "esp_sleep.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -9,13 +10,17 @@
 #include "driver/uart.h"
 #include "lidar.h"
 #include "wifiBridge.h"
+#include "udpBeacon.h"
 #include "motor_control.h"
 
 // ===== WiFi =====
-static const char *WIFI_SSID = "YOUR_SSID";
-static const char *WIFI_PASS = "YOUR_PASS";
+// static const char *WIFI_SSID = "TP-Link_C718";
+// static const char *WIFI_PASS = "20017231";
+static const char *WIFI_SSID = "VIETTEL";
+static const char *WIFI_PASS = "0906608600";
 static const uint16_t PORT_LIDAR = 9000;
 static const uint16_t PORT_CTRL = 9001;
+static const uint16_t PORT_BEACON = 50000;
 
 // ===== Lidar UART =====
 static const int LIDAR_BAUD = 115200;
@@ -30,6 +35,11 @@ static const uint8_t CMD_STOP = 0xFF;
 static const uint8_t CMD_DRIVE = 0xD1; // + int16 v, int16 w
 static const uint8_t CMD_AUTO = 0xA1;  // + int16 dist, int16 angle, int16 v, int16 w
 static const uint8_t CMD_MODE = 0xC1;  // + uint8 mode (0 drive, 1 auto)
+
+// ===== WIFI POWER MANAGER =====
+static bool g_wifiSleepOn = false;         
+static uint32_t g_wifiPmLastMs = 0;
+static const uint32_t WIFI_PM_PERIOD_MS = 300; 
 
 // ===== Mode =====
 enum RobotMode : uint8_t
@@ -52,11 +62,20 @@ typedef struct
   int16_t w_deg_s;
 } AutoCmd;
 
+// Buffer payload for udp beacon
+typedef struct
+{
+  uint8_t data[128];
+  size_t len;
+} UdpPayload;
+
 static QueueHandle_t g_autoQ = nullptr;
 
 // ===== Objects =====
 static LidarA1 lidar;
 static WifiBridgeTCP lidarStream; // port 9000
+static UdpBeacon udpBeacon; // port 50000
+static UdpPayload payload;
 
 // ===== Control socket server minimal =====
 #include "lwip/sockets.h"
@@ -108,7 +127,7 @@ static bool startCtrlServer(uint16_t port)
   int flags = fcntl(s_listen, F_GETFL, 0);
   fcntl(s_listen, F_SETFL, flags | O_NONBLOCK);
 
-  Serial.printf("[CTRL] listen %u\n", port);
+  DBG_PRINTF("[CTRL] listen %u\n", port);
   return true;
 }
 
@@ -129,7 +148,7 @@ static void pollAccept()
     s_client = c;
     int one = 1;
     setsockopt(s_client, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
-    Serial.println("[CTRL] client connected");
+    DBG_PRINTLN("[CTRL] client connected");
   }
 }
 
@@ -154,13 +173,13 @@ static bool recvExact(uint8_t *out, int n, int timeoutMs)
     int k = recv(s_client, (char *)out + got, n - got, 0);
     if (k == 0)
     {
-      Serial.println("[CTRL] client disconnected");
+      DBG_PRINTLN("[CTRL] client disconnected");
       closeFd(s_client);
       return false;
     }
     if (k < 0)
     {
-      Serial.println("[CTRL] recv error");
+      DBG_PRINTLN("[CTRL] recv error");
       closeFd(s_client);
       return false;
     }
@@ -181,7 +200,7 @@ static inline void setMode(RobotMode m)
   motor_speed_set(0, 0);
   xSemaphoreGive(g_motorMutex);
 
-  Serial.printf("[MODE] %s\n", (m == MODE_DRIVE) ? "DRIVE" : "AUTO");
+  DBG_PRINTF("[MODE] %s\n", (m == MODE_DRIVE) ? "DRIVE" : "AUTO");
 }
 
 // Thread-safe get mode
@@ -193,28 +212,65 @@ static inline RobotMode getMode()
   return m;
 }
 
+static inline bool clientActive(){return lidarStream.isClientConnected() || (s_client >= 0);}
+
+static void wifiPowerManagerTick()
+{
+  uint32_t now = millis();
+  if (now - g_wifiPmLastMs < WIFI_PM_PERIOD_MS) return;
+  g_wifiPmLastMs = now;
+
+  bool active = clientActive();
+
+  // Active => sleep OFF (realtime)
+  if (active && g_wifiSleepOn)
+  {
+    WiFi.setSleep(false);
+    g_wifiSleepOn = false;
+    DBG_PRINTLN("[WIFI_PM] sleep OFF (client active)");
+  }
+  // Idle => sleep ON (save power)  (MỨC 1)
+  else if (!active && !g_wifiSleepOn)
+  {
+    WiFi.setSleep(true);
+    g_wifiSleepOn = true;
+    DBG_PRINTLN("[WIFI_PM] sleep ON (idle)");
+  }
+}
+
 // Lidar streaming task (TCP:9000)
 static void taskLidar(void *)
 {
   static bool scanning = false;
   static uint8_t buf[2048];
-  bool connected = lidarStream.isClientConnected();
+
   for (;;)
   {
+    wifiPowerManagerTick();  
     lidarStream.poll();
+    bool connected = lidarStream.isClientConnected();
+
     if (connected && !scanning)
     {
       lidar.motor_start();
       lidar.motor_set(85);
       lidar.start_scan();
       scanning = true;
+      DBG_PRINTLN("[LIDAR] streaming ON");
     }
-
-    if (!connected && scanning)
+    else if (!connected && scanning)
     {
       lidar.stop();
       lidar.motor_stop();
       scanning = false;
+      DBG_PRINTLN("[LIDAR] streaming OFF");
+    }
+
+    if (connected)
+    {
+      int n = uart_read_bytes(LIDAR_UART, buf, sizeof(buf), pdMS_TO_TICKS(10));
+      if (n > 0)
+        lidarStream.sendBytes(buf, (size_t)n);
     }
     else
     {
@@ -223,18 +279,20 @@ static void taskLidar(void *)
   }
 }
 
+
 // AUTO task: process AUTO commands from queue
 static void taskAuto(void *)
 {
   AutoCmd cmd;
   for (;;)
   {
+    wifiPowerManagerTick();  
     if (xQueueReceive(g_autoQ, &cmd, portMAX_DELAY) == pdTRUE)
     {
       if (getMode() != MODE_AUTO)
         continue;
 
-      Serial.printf("[AUTO] dist=%d angle=%d v=%d w=%d\n",
+      DBG_PRINTF("[AUTO] dist=%d angle=%d v=%d w=%d\n",
                     cmd.dist_mm, cmd.angle_deg, cmd.v_mm_s, cmd.w_deg_s);
 
       xSemaphoreTake(g_motorMutex, portMAX_DELAY);
@@ -242,7 +300,7 @@ static void taskAuto(void *)
       motor_speed_set(0, 0);
       xSemaphoreGive(g_motorMutex);
 
-      Serial.println("[AUTO] done");
+      DBG_PRINTLN("[AUTO] done");
     }
   }
 }
@@ -254,6 +312,7 @@ static void taskCtrl(void *)
   static bool wdStopped = false;
   for (;;)
   {
+    wifiPowerManagerTick();  
     pollAccept();
     if (s_client < 0)
     {
@@ -275,7 +334,7 @@ static void taskCtrl(void *)
       xSemaphoreTake(g_motorMutex, portMAX_DELAY);
       motor_speed_set(0, 0);
       xSemaphoreGive(g_motorMutex);
-      Serial.println("[CTRL] STOP");
+      DBG_PRINTLN("[CTRL] STOP");
       continue;
     }
 
@@ -306,17 +365,7 @@ static void taskCtrl(void *)
         motor_speed_set((float)v, (float)w);
         xSemaphoreGive(g_motorMutex);
       }
-      if (getMode() == MODE_DRIVE && !wdStopped)
-      {
-        if (millis() - lastDriveMs > 400)
-        {
-          xSemaphoreTake(g_motorMutex, portMAX_DELAY);
-          motor_speed_set(0, 0);
-          xSemaphoreGive(g_motorMutex);
-          wdStopped = true;
-          Serial.println("[CTRL] watchdog STOP (no DRIVE cmd)");
-        }
-      }
+      
       continue;
     }
 
@@ -339,17 +388,41 @@ static void taskCtrl(void *)
       }
       continue;
     }
+    if (getMode() == MODE_DRIVE && !wdStopped)
+      {
+        if (millis() - lastDriveMs > 400)
+        {
+          xSemaphoreTake(g_motorMutex, portMAX_DELAY);
+          motor_speed_set(0, 0);
+          xSemaphoreGive(g_motorMutex);
+          wdStopped = true;
+          DBG_PRINTLN("[CTRL] watchdog STOP (no DRIVE cmd)");
+        }
+      }
 
     // Unknown header -> ignore (or flush)
-    Serial.printf("[CTRL] unknown hdr 0x%02X\n", hdr);
+    DBG_PRINTF("[CTRL] unknown hdr 0x%02X\n", hdr);
   }
+}
+
+// UDP Beacon task: send periodic UDP beacon
+static void taskBeacon(void *)
+{
+    DBG_PRINTLN("[BEACON] Task started");
+    for (;;)
+    {
+        udpBeacon.tick();
+        // Delay 100ms để không chiếm dụng CPU, 
+        // tick() sẽ tự biết khi nào đủ 2s để gửi gói tin.
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
 }
 
 void setup()
 {
   Serial.begin(115200);
   delay(800);
-  Serial.println("\n=== AGV binary control + lidar stream ===");
+  DBG_PRINTLN("\n=== AGV binary control + lidar stream ===");
 
   g_motorMutex = xSemaphoreCreateMutex();
   g_modeMutex = xSemaphoreCreateMutex();
@@ -362,31 +435,62 @@ void setup()
   // lidar
   esp_err_t e = lidar.begin(LIDAR_UART, UART_TX_PIN, UART_RX_PIN, LIDAR_BAUD,
                             LIDAR_PWM_CASE, LIDAR_PWM_FREQ, LIDAR_PWM_DUTY);
-  Serial.printf("[LIDAR] begin=%d\n", (int)e);
+  DBG_PRINTF("[LIDAR] begin=%d\n", (int)e);
   delay(600);
   lidar.stop();
   delay(80);
-  lidar.start_scan();
 
   // wifi + stream server
   if (!lidarStream.begin(WIFI_SSID, WIFI_PASS, PORT_LIDAR))
   {
-    Serial.println("[WIFI] stream begin failed");
+    DBG_PRINTLN("[WIFI] stream begin failed");
   }
   else
   {
-    Serial.printf("[WIFI] stream tcp://%s:%u\n", lidarStream.ipString(), PORT_LIDAR);
+    DBG_PRINTF("[WIFI] stream tcp://%s:%u\n", lidarStream.ipString(), PORT_LIDAR);
   }
+  WiFi.setSleep(true);      
+g_wifiSleepOn = true;
+DBG_PRINTLN("[WIFI_PM] init sleep ON");
 
   // ctrl server
   if (!startCtrlServer(PORT_CTRL))
   {
-    Serial.println("[CTRL] server begin failed");
+    DBG_PRINTLN("[CTRL] server begin failed");
   }
   else
   {
-    Serial.printf("[WIFI] ctrl tcp://%s:%u\n", lidarStream.ipString(), PORT_CTRL);
+    DBG_PRINTF("[WIFI] ctrl tcp://%s:%u\n", lidarStream.ipString(), PORT_CTRL);
   }
+  if (udpBeacon.begin(PORT_BEACON))
+{
+    payload.len = snprintf(
+        (char*)payload.data,
+        sizeof(payload.data),
+        "AGV_01|%s|%u|%u",
+        lidarStream.ipString(),
+        PORT_LIDAR,
+        PORT_CTRL
+    );
+
+    udpBeacon.setPayload(payload.data, payload.len);
+
+    DBG_PRINTF("[BEACON] Started on port %u\n", PORT_BEACON);
+
+    xTaskCreatePinnedToCore(
+        taskBeacon,
+        "beacon",
+        2048,
+        nullptr,
+        5,
+        nullptr,
+        0
+    );
+}
+else
+{
+    DBG_PRINTLN("[BEACON] Failed to start");
+}
 
   setMode(MODE_DRIVE);
 
@@ -395,10 +499,10 @@ void setup()
   xTaskCreatePinnedToCore(taskCtrl, "ctrl", 4096, nullptr, 9, nullptr, 1);
   xTaskCreatePinnedToCore(taskAuto, "auto", 6144, nullptr, 8, nullptr, 1);
 }
-
 // Arduino `loop`: vòng lặp chính rất nhẹ, chỉ sleep để nhường CPU cho các task
 void loop()
 {
-  // nothing heavy here
+  wifiPowerManagerTick();  
+  // idleLightSleepTick();
   vTaskDelay(pdMS_TO_TICKS(20));
 }
