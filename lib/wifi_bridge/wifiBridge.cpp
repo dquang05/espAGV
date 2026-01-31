@@ -81,6 +81,9 @@ void WifiBridgeTCP::poll() {
   if (c >= 0) {
     clientFd_ = c;
 
+    const uint8_t hello[] = {'A','G','V','1', 1, 0}; // magic + verMajor + verMinor
+    send(clientFd_, hello, sizeof(hello), 0);
+
     // optional: non-block client recv
     // int flags = fcntl(clientFd_, F_GETFL, 0);
     // fcntl(clientFd_, F_SETFL, flags | O_NONBLOCK);
