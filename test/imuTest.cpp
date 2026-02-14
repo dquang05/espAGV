@@ -32,7 +32,7 @@ void setup() {
   Serial.begin(115200);
   delay(300);
 
-  Serial.println("\n=== MPU6050 TEST (ESP-IDF I2C via Arduino/PIO) ===");
+  Serial.println("Setup here!");
 
   // Init I2C
   esp_err_t err = twi_init(&bus);
@@ -44,8 +44,7 @@ void setup() {
   // Init MPU
   err = imu.begin();
   if (err != ESP_OK) {
-    Serial.printf("imu.begin FAIL: %d\n", (int)err);
-    Serial.println("Check wiring, addr (0x68/0x69), pullups, SDA/SCL pins.");
+    Serial.printf("MPU6050::begin FAIL: %d\n", (int)err);
     while (1) delay(1000);
   }
 
@@ -60,7 +59,6 @@ void setup() {
   // Optional: set axis mapping 
   // imu.setAxisMap(map_cw90);
 
-  Serial.println("Hold still... calibrating gyro (2s)");
   err = imu.calibrateGyro(400, 5);
   Serial.printf("calibrateGyro: %d\n", (int)err);
 
@@ -71,8 +69,6 @@ void setup() {
 
   last_us = (uint64_t)esp_timer_get_time();
 
-  // CSV header
-  Serial.println("t_ms,ax_g,ay_g,az_g,gx_dps,gy_dps,gz_dps,roll_deg,pitch_deg");
 }
 
 void loop() {
@@ -80,7 +76,7 @@ void loop() {
   float dt = (now_us - last_us) * 1e-6f;
   last_us = now_us;
 
-  // đọc scaled
+  // read scaled
   mpu6050_scaled_t s{};
   float roll=0, pitch=0;
 

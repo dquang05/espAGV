@@ -11,8 +11,8 @@ public:
   WifiBridgeTCP() = default;
 
   // Start WiFi STA + TCP server
-  // port ví dụ 9000
   bool begin(const char* ssid, const char* pass, uint16_t port);
+  bool beginServerOnly(uint16_t port);
 
   // Call repeatedly in loop() to accept client / maintain connection
   void poll();

@@ -34,11 +34,11 @@ typedef enum {
   MPU_GYRO_2000DPS = 3
 } mpu_gyro_fs_t;
 
-// Axis mapping để “đổi hướng đặt” linh hoạt
+// Axis mapping 
 enum Axis : uint8_t { AX_X = 0, AX_Y = 1, AX_Z = 2 };
 
 struct AxisMap {
-  Axis  src[3];   // bodyX/bodyY/bodyZ lấy từ sensor trục nào
+  Axis  src[3];   // bodyX/bodyY/bodyZ 
   int8_t sign[3]; // +1 hoặc -1
 };
 
@@ -46,41 +46,49 @@ class MPU6050 {
 public:
   MPU6050(i2c_port_t port, uint8_t addr = 0x68);
 
-  // Init + basic config
   esp_err_t begin();
 
-  esp_err_t setSampleRate(uint16_t hz);   // thường dùng 50/100/200
-  esp_err_t setDLPF(uint8_t dlpf_cfg);    // 0..6
+  esp_err_t setSampleRate(uint16_t hz);
+  esp_err_t setDLPF(uint8_t dlpf_cfg);
   esp_err_t setAccelRange(mpu_accel_fs_t fs);
   esp_err_t setGyroRange(mpu_gyro_fs_t fs);
+
+  // Debug / health check (public wrapper, KHÔNG lộ readReg_)
+  esp_err_t whoAmI(uint8_t* out);
 
   // Read
   esp_err_t readRaw(mpu6050_raw_t* out);
   esp_err_t readScaled(mpu6050_scaled_t* out);
 
-  // Calibration: khuyến nghị chỉ calib gyro trước khi tính góc
-  esp_err_t calibrateGyro(uint16_t samples, uint16_t sample_delay_ms = 5);
+  // Read + map theo AxisMap ra body axes
+  esp_err_t readScaledBody(mpu6050_scaled_t* out_body);
 
-  // Nếu sau này bạn muốn calib accel kiểu 6 mặt (không bắt buộc giai đoạn đầu)
-  void setAccelBiasRaw(int16_t bax, int16_t bay, int16_t baz);
-  void setGyroBiasRaw(int16_t bgx, int16_t bgy, int16_t bgz);
-
-  void getGyroBiasRaw(int16_t& bgx, int16_t& bgy, int16_t& bgz) const;
-  void getAccelBiasRaw(int16_t& bax, int16_t& bay, int16_t& baz) const;
-
-  // Axis mapping (đổi tư thế lắp đặt)
-  void setAxisMap(const AxisMap& m);
-  AxisMap getAxisMap() const { return map_; }
-
-  // Complementary filter angles
-  void setAlpha(float a);           // 0.90..0.99
+  // Filter config + state
+  void setAlpha(float a);
   float getAlpha() const { return alpha_; }
   void resetAngles(float roll_deg = 0.0f, float pitch_deg = 0.0f);
 
-  // dt tính bằng giây (seconds)
+  // Compute angles (NO I2C) from already-read body data
+  esp_err_t computeAnglesFromScaled(const mpu6050_scaled_t& s_body, float* roll, float* pitch, float dt_s);
+
+  // Read once + compute angles 
+  esp_err_t readScaledAndAngles(mpu6050_scaled_t* out_s_body, float* roll, float* pitch, float dt_s);
+
+  // Compute angles (I2C inside)
   esp_err_t computeAngles(float* roll_deg, float* pitch_deg, float dt_s);
 
-  // lấy state hiện tại (deg)
+  // Calibration
+  esp_err_t calibrateGyro(uint16_t samples, uint16_t sample_delay_ms = 5);
+
+  // Bias + mapping
+  void setAccelBiasRaw(int16_t bax, int16_t bay, int16_t baz);
+  void setGyroBiasRaw(int16_t bgx, int16_t bgy, int16_t bgz);
+  void getGyroBiasRaw(int16_t& bgx, int16_t& bgy, int16_t& bgz) const;
+  void getAccelBiasRaw(int16_t& bax, int16_t& bay, int16_t& baz) const;
+
+  void setAxisMap(const AxisMap& m);
+  AxisMap getAxisMap() const { return map_; }
+
   float rollDeg() const { return roll_deg_; }
   float pitchDeg() const { return pitch_deg_; }
 
@@ -91,11 +99,11 @@ private:
   mpu_accel_fs_t accel_fs_ = MPU_ACCEL_2G;
   mpu_gyro_fs_t  gyro_fs_  = MPU_GYRO_250DPS;
 
-  // Bias RAW (để trừ trước khi scale) — mặc định = 0
-  int16_t accel_bias_[3] = {0,0,0}; // không tự set trong calibrateGyro()
+  // Bias RAW 
+  int16_t accel_bias_[3] = {0,0,0}; 
   int16_t gyro_bias_[3]  = {0,0,0};
 
-  AxisMap map_{{AX_X, AX_Y, AX_Z}, {+1, +1, +1}};
+  AxisMap map_{{AX_X, AX_Y, AX_Z}, {-1, -1, +1}};
 
   float alpha_ = 0.96f;
   float roll_deg_ = 0.0f;

@@ -35,6 +35,23 @@ bool WifiBridgeTCP::begin(const char *ssid, const char *pass, uint16_t port)
   return startServer_();
 }
 
+bool WifiBridgeTCP::beginServerOnly(uint16_t port)
+{
+  port_ = port;
+
+  if (WiFi.status() != WL_CONNECTED)
+  {
+    DBG_PRINTLN("[WIFI] beginServerOnly: WiFi not connected");
+    return false;
+  }
+
+  IPAddress ip = WiFi.localIP();
+  snprintf(ipStr_, sizeof(ipStr_), "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
+
+  return startServer_();
+}
+
+
 bool WifiBridgeTCP::startServer_()
 {
   // create server socket
